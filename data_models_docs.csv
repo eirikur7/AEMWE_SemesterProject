@@ -1,0 +1,2 @@
+model_name,data_file,trained_at,training_duration,num_layers,layer_sizes,learning_rate,epochs,batch_size,test_size,num_features,num_outputs,mae,rmse,r2,mape,max_error,median_ae,val_loss_best,best_epoch,inference_time_ms,activation,loss_function,optimizer,dropout_rate,early_stopping
+model_2D_002__250509_164049,2D_002.csv,2025-05-09 16:40:49,121.812422,3,"[128, 64, 32]",0.001,50,16,0.2,6,1,0.047610805844210485,0.09701263544917993,0.994636062228,11185.301662283398,2.2788460364900374,0.025072078189049787,0.008131066337227821,8,0.036426245772231504,relu,mse,Adam,0.2,True
