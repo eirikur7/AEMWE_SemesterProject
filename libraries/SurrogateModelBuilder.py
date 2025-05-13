@@ -1,44 +1,88 @@
-import pandas as pd
-import numpy as np
+# -*- coding: utf-8 -*-
+"""
+SurrogateModelBuilder
+
+This module defines the SurrogateModelBuilder class, a utility for constructing, training, evaluating,
+and documenting deep neural network surrogate models for simulation data, specifically tailored for data
+exported from COMSOL Multiphysics. It provides flexible support for custom architectures, optimizer
+choices, early stopping, and extensive logging of both training metrics and model metadata.
+
+Input data is expected to be in CSV format, with comment lines prefixed by '%'. The final comment line
+must define the column headers. Input features are assumed to occupy the initial columns and output targets
+the final columns, unless explicitly defined via `output_columns`.
+
+Typical use cases include surrogate modeling, sensitivity studies, and hyperparameter optimization pipelines.
+"""
+
+import os
+import time
 import datetime
 import joblib
-import os
+import pandas as pd
+import numpy as np
 from os import path
-import time
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    mean_absolute_error, mean_squared_error, r2_score,
+    max_error, median_absolute_error
+)
 import tensorflow as tf
-from tensorflow.keras.layers import Input, Dense, Dropout
 from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Input, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score, max_error, median_absolute_error
 
 class SurrogateModelBuilder:
     """
-    Builds, trains, evaluates, and logs a surrogate deep learning model using TensorFlow/Keras.
-    Includes support for early stopping, dynamic input/output column handling, and comprehensive logging.
+    Class for building, training, evaluating, and logging deep neural network surrogate models using TensorFlow/Keras.
+
+    Supports configurable architectures, input/output column handling, early stopping, training time tracking,
+    evaluation metrics, model persistence, and experiment logging.
     """
 
-    def __init__(self, data_path, models_log, models_folder, outputs,
-                 layer_sizes, learning_rate, epochs, batch_size, test_size,
-                 activation='relu', optimizer_class=Adam, loss_function='mse',
-                 use_early_stopping=False, dropout_rate=None, output_columns=None):
-        """Initialize the builder with model and training configuration."""
+    def __init__(self, data_path, outputs, hyperparameters,
+                 output_columns=None, models_log="data_models_docs.csv",
+                 models_folder="data_models"):
+        """
+        Initialize the model builder with dataset location, expected output shape, and training hyperparameters.
+
+        Parameters:
+            data_path (str): Path to the input CSV data file.
+            outputs (int): Number of output variables (if output_columns is not specified).
+            hyperparameters (dict): Dictionary with keys:
+                - layer_sizes (list of int): Hidden layer sizes.
+                - learning_rate (float): Optimizer learning rate.
+                - epochs (int): Number of training epochs.
+                - batch_size (int): Training batch size.
+                - test_size (float): Fraction of data to use as test set.
+                - activation (str): Activation function for hidden layers.
+                - optimizer_class (tf.keras.optimizers.Optimizer): Optimizer class.
+                - loss_function (str): Loss function name (e.g., 'mse').
+                - use_early_stopping (bool): Enable early stopping based on validation loss.
+                - dropout_rate (float or None): Dropout rate (0–1) or None for no dropout.
+                - verbose (bool): Verbosity flag for training.
+            output_columns (list of str, optional): Names of output columns. If not provided, inferred.
+            models_log (str): Path to the model log CSV.
+            models_folder (str): Directory for saving models and scalers.
+        """
         self.data_path = data_path
-        self.models_log = models_log
-        self.models_folder = models_folder
         self.outputs = outputs
         self.output_columns = output_columns
-        self.layer_sizes = layer_sizes
-        self.learning_rate = learning_rate
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.test_size = test_size
-        self.activation = activation
-        self.optimizer_class = optimizer_class
-        self.loss_function = loss_function
-        self.use_early_stopping = use_early_stopping
-        self.dropout_rate = dropout_rate
+        self.models_log = models_log
+        self.models_folder = models_folder
+
+        # Extract and store hyperparameters
+        self.layer_sizes = hyperparameters['layer_sizes']
+        self.learning_rate = hyperparameters['learning_rate']
+        self.epochs = hyperparameters['epochs']
+        self.batch_size = hyperparameters['batch_size']
+        self.test_size = hyperparameters['test_size']
+        self.activation = hyperparameters['activation']
+        self.optimizer_class = hyperparameters['optimizer_class']
+        self.loss_function = hyperparameters['loss_function']
+        self.use_early_stopping = hyperparameters['use_early_stopping']
+        self.dropout_rate = hyperparameters['dropout_rate']
+        self.verbose = hyperparameters['verbose']
 
         self.scaler = StandardScaler()
         self.model = None
@@ -48,71 +92,89 @@ class SurrogateModelBuilder:
         self.training_duration = None
         self.metrics = {}
 
+    def __str__(self):
+        if self.model_name:
+            return (f"SurrogateModelBuilder Summary\n"
+                    f"Model: {self.model_name}\n"
+                    f"Trained at: {self.trained_at}\n"
+                    f"Layer sizes: {self.layer_sizes}\n"
+                    f"MAE: {self.metrics.get('mae', 'N/A'):.4f}, "
+                    f"RMSE: {self.metrics.get('rmse', 'N/A'):.4f}, "
+                    f"R^2: {self.metrics.get('r2', 'N/A'):.4f}, "
+                    f"MAPE: {self.metrics.get('mape', 'N/A'):.2f}%")
+        return "SurrogateModelBuilder (untrained)"
+
     def _load_data(self):
-        """Loads and preprocesses the dataset from CSV, including dynamic column handling and scaling."""
-        with open(self.data_path, 'r') as file:
-            lines = file.readlines()
+        """Load and preprocess data: strip headers, scale inputs, split into train/test sets."""
+        with open(self.data_path, 'r') as f:
+            lines = f.readlines()
+
         skip_rows = sum(1 for line in lines if line.strip().startswith('%'))
         header_line = lines[skip_rows - 1].lstrip('%').strip()
         column_names = [col.strip() for col in header_line.split(',')]
 
         df = pd.read_csv(self.data_path, skiprows=skip_rows, header=None)
         df.columns = column_names
-        df = df.dropna()
+        df.dropna(inplace=True)
 
-        # Identify input/output columns
         if self.output_columns:
-            input_columns = [col for col in df.columns if col not in self.output_columns]
-            output_columns = self.output_columns
+            input_cols = [col for col in df.columns if col not in self.output_columns]
+            output_cols = self.output_columns
         else:
-            input_columns = df.columns[:-self.outputs]
-            output_columns = df.columns[-self.outputs:]
+            input_cols = df.columns[:-self.outputs]
+            output_cols = df.columns[-self.outputs:]
 
-        X = df[input_columns].values
-        y = df[output_columns].values
+        X = df[input_cols].values
+        y = df[output_cols].values
 
         X_scaled = self.scaler.fit_transform(X)
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-            X_scaled, y, test_size=self.test_size, random_state=42
-        )
+            X_scaled, y, test_size=self.test_size, random_state=42)
+
         self.num_features = X.shape[1]
         self.num_outputs = y.shape[1]
 
     def _build_model(self):
-        """Constructs the neural network model with specified architecture and dropout."""
+        """Constructs the Keras model architecture based on the provided configuration."""
         model = Sequential()
         model.add(Input(shape=(self.X_train.shape[1],)))
+
         for size in self.layer_sizes:
             model.add(Dense(size, activation=self.activation))
             if self.dropout_rate is not None:
                 model.add(Dropout(self.dropout_rate))
+
         model.add(Dense(self.y_train.shape[1]))  # Output layer
+
         optimizer = self.optimizer_class(learning_rate=self.learning_rate)
         model.compile(optimizer=optimizer, loss=self.loss_function, metrics=['mae'])
+
         self.model = model
 
     def _train_model(self):
-        """Trains the model with optional early stopping."""
+        """Trains the Keras model and tracks training duration and performance."""
         callbacks = []
         if self.use_early_stopping:
             callbacks.append(tf.keras.callbacks.EarlyStopping(
                 patience=10, restore_best_weights=True))
 
-        start_time = datetime.datetime.now()
+        start = datetime.datetime.now()
         self.history = self.model.fit(
-            self.X_train, self.y_train, validation_split=0.1,
-            epochs=self.epochs, batch_size=self.batch_size,
-            callbacks=callbacks, verbose=0
-        )
-        end_time = datetime.datetime.now()
-        self.training_duration = (end_time - start_time).total_seconds()
+            self.X_train, self.y_train,
+            validation_split=0.1,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            callbacks=callbacks,
+            verbose=int(self.verbose))
+        end = datetime.datetime.now()
+        self.training_duration = (end - start).total_seconds()
 
     def _evaluate_model(self):
-        """Evaluates the model on the test set and records various metrics."""
+        """Evaluates the trained model and stores performance metrics."""
         start = time.time()
         y_pred = self.model.predict(self.X_test)
         end = time.time()
-        
+
         self.metrics = {
             'mae': mean_absolute_error(self.y_test, y_pred),
             'rmse': np.sqrt(mean_squared_error(self.y_test, y_pred)),
@@ -126,7 +188,7 @@ class SurrogateModelBuilder:
         }
 
     def _save_model(self):
-        """Saves the trained model and its scaler to disk."""
+        """Saves the trained model and scaler to disk in a timestamped directory."""
         now = datetime.datetime.now()
         base_name = os.path.splitext(os.path.basename(self.data_path))[0]
         self.model_name = f"model_{base_name}__{now.strftime('%y%m%d_%H%M%S')}"
@@ -137,7 +199,7 @@ class SurrogateModelBuilder:
         joblib.dump(self.scaler, path.join(self.models_folder, self.model_name + "_scaler.pkl"))
 
     def _log_model(self):
-        """Logs model metadata and evaluation metrics to a CSV log file."""
+        """Appends model configuration and evaluation metrics to a persistent CSV log."""
         try:
             df_log = pd.read_csv(self.models_log)
         except FileNotFoundError:
@@ -173,261 +235,34 @@ class SurrogateModelBuilder:
 
         df_log.to_csv(self.models_log, index=False)
 
-    def build_and_train(self):
-        """Full pipeline: load data, build, train, evaluate, save and log the model."""
+    def build_and_train(self, v=False):
+        """
+        Orchestrates the full training pipeline: loading data, building and training the model,
+        evaluating its performance, saving model artifacts, and logging results.
+
+        Parameters:
+            v (bool): If True, prints stage progress to stdout.
+
+        Returns:
+            tuple: (trained model, fitted scaler, training history, X_test, y_test)
+        """
+        self.verbose = v
+        if v: print("[INFO] Loading data...")
         self._load_data()
+
+        if v: print("[INFO] Building model...")
         self._build_model()
+
+        if v: print("[INFO] Training model...")
         self._train_model()
+
+        if v: print("[INFO] Evaluating model...")
         self._evaluate_model()
+
+        if v: print("[INFO] Saving model...")
         self._save_model()
+
+        if v: print("[INFO] Logging results...")
         self._log_model()
+
         return self.model, self.scaler, self.history, self.X_test, self.y_test
-
-
-
-# import pandas as pd 
-# import numpy as np 
-# import matplotlib.pyplot as plt
-# import seaborn as sns
-# import datetime 
-# import joblib 
-# import os 
-# from os import path 
-# from sklearn.model_selection import train_test_split 
-# from sklearn.preprocessing import StandardScaler 
-# import tensorflow as tf 
-# from tensorflow.keras.layers import Input, Dense, Dropout 
-# from tensorflow.keras.models import Sequential, load_model 
-# from tensorflow.keras.optimizers import Adam 
-# from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-
-# # Set seeds for reproducibility
-# DEFAULT_RANDOM_SEED = 42
-# np.random.seed(DEFAULT_RANDOM_SEED)
-# tf.random.set_seed(DEFAULT_RANDOM_SEED)
-
-# class SurrogateModelBuilder: 
-#     """
-#     Builds and trains a surrogate model using TensorFlow/Keras. 
-#     This class handles data loading, preprocessing, 
-#     model construction, training, saving, and logging.
-#     """
-
-#     DEFAULT_RANDOM_SEED = DEFAULT_RANDOM_SEED
-#     DEFAULT_SCALER_TYPE = "StandardScaler"
-#     DEFAULT_EARLY_STOPPING = "N/A"
-#     DEFAULT_DROPOUT_RATE = "N/A"
-    
-#     def __init__(self, data_path, models_log, models_folder, outputs, layer_sizes,
-#                  learning_rate, epochs, batch_size, test_size,
-#                  activation='relu', optimizer_class=Adam, loss_function='mse',
-#                  use_early_stopping=False, dropout_rate=None):
-#         self.data_path = data_path
-#         self.models_log = models_log
-#         self.models_folder = models_folder
-#         self.outputs = outputs
-#         self.layer_sizes = layer_sizes
-#         self.learning_rate = learning_rate
-#         self.epochs = epochs
-#         self.batch_size = batch_size
-#         self.test_size = test_size
-#         self.activation = activation
-#         self.optimizer_class = optimizer_class
-#         self.loss_function = loss_function
-#         self.use_early_stopping = use_early_stopping
-#         self.dropout_rate = dropout_rate if dropout_rate is not None else self.DEFAULT_DROPOUT_RATE
-
-#         self.metrics = None
-#         self.scaler = None
-#         self.X_train = None
-#         self.X_test = None
-#         self.y_train = None
-#         self.y_test = None
-#         self.model = None
-#         self.history = None
-#         self.model_name = None
-#         self.training_duration = None
-#         self.trained_at = None
-#         self.df = None
-
-#     def _estimate_num_parameters(self):
-#         """Estimate total trainable parameters using layer sizes and input/output dimensions."""
-#         input_dim = self.X_train.shape[1]
-#         output_dim = self.y_train.shape[1]
-#         total = 0
-#         prev = input_dim
-#         for size in self.layer_sizes:
-#             total += (prev * size) + size  # weights + biases
-#             prev = size
-#         total += (prev * output_dim) + output_dim
-#         return total
-
-
-#     def _load_data(self):
-#         """
-#         Loads COMSOL data from the specified CSV file, detects and skips metadata,
-#         applies custom column modifications, and splits the data.
-#         """
-#         # Detect how many lines start with '%'
-#         with open(self.data_path, 'r') as file:
-#             lines = file.readlines()
-#         skip_rows = 0
-#         for line in lines:
-#             if line.strip().startswith('%'):
-#                 skip_rows += 1
-#             else:
-#                 break
-
-#         # Extract header from the last metadata line
-#         header_line = lines[skip_rows - 1].lstrip('%').strip()
-#         column_names = [col.strip() for col in header_line.split(',')]
-
-#         # Load CSV skipping metadata lines but using extracted header
-#         self.df = pd.read_csv(self.data_path, skiprows=skip_rows, header=None)
-#         self.df.columns = column_names
-
-#         self._apply_custom_column_modifications(self.df)
-
-#         # Split dataframe into inputs and outputs
-#         input_columns = self.df.columns[:-self.outputs]
-#         output_columns = self.df.columns[-self.outputs:]
-
-#         X = self.df[input_columns].values
-#         y = self.df[output_columns].values
-
-#         self.scaler = StandardScaler()
-#         X_scaled = self.scaler.fit_transform(X)
-
-#         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-#             X_scaled, y, test_size=self.test_size, random_state=42
-#         )
-
-#     def _build_model(self):
-#         self.model = Sequential()
-#         self.model.add(Input(shape=(self.X_train.shape[1],)))
-#         for size in self.layer_sizes:
-#             self.model.add(Dense(size, activation=self.activation))
-#             if self.dropout_rate != "N/A":
-#                 self.model.add(Dropout(float(self.dropout_rate)))
-
-#         self.model.add(Dense(self.y_train.shape[1]))  # Output layer
-#         optimizer = self.optimizer_class(learning_rate=self.learning_rate)
-#         self.model.compile(optimizer=optimizer, loss=self.loss_function, metrics=['mae'])
-
-
-#     def _train_model(self):
-#         start_time = datetime.datetime.now()
-#         self.history = self.model.fit(
-#             self.X_train, self.y_train, validation_split=0.1,
-#             epochs=self.epochs, batch_size=self.batch_size, verbose=1
-#         )
-#         end_time = datetime.datetime.now()
-#         self.training_duration = (end_time - start_time).total_seconds()
-        
-
-#     def _save_model(self):
-#         now = datetime.datetime.now()
-#         data_base = os.path.splitext(os.path.basename(self.data_path))[0]
-#         self.model_name = f"model_{data_base}__{now.strftime('%y%m%d_%H%M%S')}"
-#         self.trained_at = now.strftime('%Y-%m-%d %H:%M:%S')
-
-#         if not os.path.exists(self.models_folder):
-#             os.makedirs(self.models_folder)
-
-#         model_filepath = path.join(self.models_folder, self.model_name + ".keras")
-#         self.model.save(model_filepath)
-#         scaler_filepath = path.join(self.models_folder, self.model_name + "_scaler.pkl")
-#         joblib.dump(self.scaler, scaler_filepath)
-#         print(f"Model saved as: {model_filepath}")
-#         print(f"Scaler saved as: {scaler_filepath}")
-    
-    
-#     def _evaluate_model(self):
-#         predictions = self.model.predict(self.X_test)
-#         mae = mean_absolute_error(self.y_test, predictions)
-#         rmse = mean_squared_error(self.y_test, predictions, squared=False)
-#         r2 = r2_score(self.y_test, predictions)
-#         self.metrics = {
-#             'mae': mae,
-#             'rmse': rmse,
-#             'r2': r2
-#         }
-
-#     def _log_model(self):
-#         try:
-#             models_df = pd.read_csv(log_filepath=self.models_log)
-#         except FileNotFoundError:
-#             models_df = pd.DataFrame(columns=[
-#                 'model_name', 'data_file', 'num_layers', 'layer_sizes',
-#                 'learning_rate', 'epochs', 'batch_size', 'training_duration',
-#                 'trained_at', 'mae', 'rmse', 'r2',
-#                 'test_size', 'random_seed', 'activation', 'loss_function',
-#                 'optimizer', 'dropout_rate', 'early_stopping',
-#                 'scaler_type', 'train_size', 'num_parameters'
-#             ])
-#         new_model = pd.DataFrame({
-#             'model_name': [self.model_name],
-#             'data_file': [os.path.basename(self.data_path)],
-#             'num_layers': [len(self.layer_sizes)],
-#             'layer_sizes': [self.layer_sizes],
-#             'learning_rate': [self.learning_rate],
-#             'epochs': [self.epochs],
-#             'batch_size': [self.batch_size],
-#             'training_duration': [self.training_duration],
-#             'trained_at': [self.trained_at],
-#             'mae': [self.metrics.get('mae')],
-#             'rmse': [self.metrics.get('rmse')],
-#             'r2': [self.metrics.get('r2')],
-#             'test_size': [self.test_size],
-#             'random_seed': [self.DEFAULT_RANDOM_SEED],
-#             'activation': [self.activation],
-#             'loss_function': [self.loss_function],
-#             'optimizer': [self.optimizer_class.__name__],
-#             'dropout_rate': [self.dropout_rate],
-#             'early_stopping': [self.use_early_stopping],
-#             'scaler_type': [self.DEFAULT_SCALER_TYPE],
-#             'train_size': [1 - self.test_size],
-#             'num_parameters': [self._estimate_num_parameters()]
-#         })
-#         models_df = pd.concat([models_df, new_model], ignore_index=True)
-#         models_df.to_csv(self.models_log, index=False)
-#         print(f"Model logged in: {self.models_log}")
-        
-
-#     def build_and_train(self):
-#         self._load_data()
-#         self._build_model()
-#         self._train_model()
-#         self._save_model()
-#         self._evaluate_model()
-#         self._log_model()
-#         return self.model, self.scaler, self.history, self.X_test, self.y_test
-
-
-# if __name__ == "__main__": 
-#     FOLDER_DATA = "comsol_data" 
-#     FILE_NAME_DATA = "2D_002.csv" 
-#     FILE_PATH_DATA = path.join(FOLDER_DATA, FILE_NAME_DATA)
-#     FOLDER_MODELS = "models"
-#     LOG_FILE = "models.csv"
-
-#     layer_sizes = [6, 4, 2]
-#     learning_rate = 1e-3
-#     epochs = 100
-#     batch_size = 32
-#     test_size = 0.2
-#     outputs = 1
-
-#     builder = SurrogateModelBuilder(
-#         data_path=FILE_PATH_DATA,
-#         models_log=LOG_FILE,
-#         models_folder=FOLDER_MODELS,
-#         outputs=outputs,
-#         layer_sizes=layer_sizes,
-#         learning_rate=learning_rate,
-#         epochs=epochs,
-#         batch_size=batch_size,
-#         test_size=test_size
-#     )
-#     model, scaler, history, X_test, y_test = builder.build_and_train()
