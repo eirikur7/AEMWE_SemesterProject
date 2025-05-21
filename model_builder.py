@@ -11,7 +11,7 @@ import itertools
 import random
 import os
 import tensorflow as tf
-from libraries.SurrogateModelBuilder import SurrogateModelBuilder
+from libraries.DNN import SurrogateModelBuilder
 
 # --- PATHS & DATA ---
 DATA_FOLDER = "data_comsol"

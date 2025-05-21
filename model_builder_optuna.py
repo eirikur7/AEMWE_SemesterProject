@@ -1,36 +1,44 @@
 import optuna
 import os
 import tensorflow as tf
-from libraries import SurrogateModelBuilder
+from libraries.DNN import SurrogateModelBuilder
 
 # --- Configuration ---
-DATA_FOLDER = "comsol_data"
-DATA_FILE = "2D_002.csv"
+DATA_FOLDER = "data_comsol"
+DATA_FILE = "3D_001.csv"
 DATA_PATH = os.path.join(DATA_FOLDER, DATA_FILE)
 
-MODELS_FOLDER = "optuna_models"
-LOG_FILE = "optuna_models_log.csv"
+MODELS_FOLDER = "data_models"
+LOG_FILE = "data_models_docs.csv"
 OUTPUTS = 1
 TEST_SIZE = 0.2
 USE_EARLY_STOPPING = True
 
 # --- Objective Function ---
 def objective(trial):
-    # Suggest hyperparameters
-    layer_depth = trial.suggest_int("n_layers", 1, 4)
-    layer_sizes = [trial.suggest_int(f"n_units_l{i}", 32, 512, step=32) for i in range(layer_depth)]
+    # Architecture
+    n_layers = trial.suggest_int("n_layers", 3, 6)
+    layer_sizes = [trial.suggest_int(f"n_units_l{i}", 128, 1024, step=64) for i in range(n_layers)]
 
-    lr = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [8, 16, 32, 64])
-    epochs = trial.suggest_categorical("epochs", [30, 50, 100, 200])
-    activation = trial.suggest_categorical("activation", ["relu", "tanh", "swish"])
-    dropout_rate = trial.suggest_float("dropout_rate", 0.0, 0.5)
-    loss_function = trial.suggest_categorical("loss_function", ["mse", "mae", "huber"])
+    # Regularization
+    dropout_rate = trial.suggest_float("dropout_rate", 0.1, 0.5)
+    batch_norm = trial.suggest_categorical("use_batch_norm", [True, False])
+
+    # Optimization
+    lr = trial.suggest_float("learning_rate", 5e-5, 5e-3, log=True)
     optimizer_class = trial.suggest_categorical("optimizer", [
         tf.keras.optimizers.Adam,
         tf.keras.optimizers.Nadam,
-        tf.keras.optimizers.RMSprop
+        tf.keras.optimizers.AdamW
     ])
+    
+    # Training setup
+    batch_size = trial.suggest_categorical("batch_size", [64, 128, 256])
+    epochs = trial.suggest_categorical("epochs", [50, 100, 150])
+    
+    # Activation and loss
+    activation = trial.suggest_categorical("activation", ["relu", "tanh", "swish"])
+    loss_function = trial.suggest_categorical("loss_function", ["mse", "mae", "huber"])
 
     # Prepare model
     hyperparams = {
@@ -44,7 +52,7 @@ def objective(trial):
         'loss_function': loss_function,
         'use_early_stopping': USE_EARLY_STOPPING,
         'dropout_rate': dropout_rate,
-        'verbose': False
+        'verbose': True
     }
 
     builder = SurrogateModelBuilder(
@@ -55,7 +63,7 @@ def objective(trial):
         models_folder=MODELS_FOLDER
     )
 
-    builder.build_and_train(v=False)
+    builder.build_and_train(v=True)
 
     # Minimize MAE
     return builder.metrics["mae"]
