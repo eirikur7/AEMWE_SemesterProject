@@ -1,59 +1,64 @@
 {
-    "parameters": {
-      "W_mem": {
-        "values": [30, 60, 90],
-        "unit": "um",
-        "convert_to": "m",
-        "scaling_factor": 1e-6
-      },
-      "W_H2_GDE": {
-        "values": [0.20, 0.40, 0.60],
-        "unit": "mm",
-        "convert_to": "m",
-        "scaling_factor": 1e-3
-      },
-      "T": {
-        "values": [30, 50, 60, 80],
-        "unit": "degC",
-        "linked": {
-          "i0_ref_O2": [0.014, 0.027, 0.037, 0.035],
-          "i0_ref_H2": [0.024, 0.037, 0.047, 0.045]
-        }
-      },
-      "sigmas_MGL370": {
-        "values": [535700.0, 5357000.0, 53570000.0],
-        "unit": "S/m",
-        "scaling_factor": 1.0
-      },
-      "sigmas_SS316L": {
-        "values": [17153.7, 171537.0, 1715370.0],
-        "unit": "S/m",
-        "scaling_factor": 1.0
-      },
-      "eps_H2": {
-        "values": [0.60, 0.70, 0.80],
-        "scaling_factor": 1.0
-      },
-      "eps_O2": {
-        "values": [0.60, 0.70, 0.80],
-        "scaling_factor": 1.0
-      },
-      "v_in_H2": {
-        "values": [0.0014, 0.00224358974, 0.0035, 0.00448717948, 0.0056],
-        "unit": "m/s",
-        "scaling_factor": 1.0
-      },
-      "v_in_O2": {
-        "values": [0.00224358974, 0.0035, 0.00448717948, 0.0056],
-        "unit": "m/s",
-        "scaling_factor": 1.0
-      },
-      "p_gas": {
-        "values": [1, 10, 100],
-        "unit": "atm",
-        "convert_to": "Pa",
-        "scaling_factor": 101325
+  "parameters": {
+    "W_mem": {
+      "values": [30, 60, 90],
+      "unit": "um",
+      "convert_to": "m",
+      "scaling_factor": 1e-6
+    },
+    "W_GDE": {
+      "values": [200, 400, 600],
+      "unit": "um",
+      "convert_to": "m",
+      "scaling_factor": 1e-6
+    },
+    "T": {
+      "values": [30, 50, 60, 80],
+      "unit": "degC",
+      "linked": {
+        "i0_ref_O2": [0.014, 0.027, 0.037, 0.035],
+        "i0_ref_H2": [0.024, 0.037, 0.047, 0.045]
       }
+    },
+    "sigmas_MGL370": {
+      "values": [535700.0, 5357000.0, 53570000.0],
+      "unit": "S/m",
+      "scaling_factor": 1.0
+    },
+    "sigmas_SS316L": {
+      "values": [17153.7, 171537.0, 1715370.0],
+      "unit": "S/m",
+      "scaling_factor": 1.0
+    },
+    "eps_H2": {
+      "values": [0.60, 0.70, 0.80],
+      "scaling_factor": 1.0
+    },
+    "eps_O2": {
+      "values": [0.60, 0.70, 0.80],
+      "scaling_factor": 1.0
+    },
+    "v_in_H2": {
+      "values": [0.0014, 0.00224358974, 0.0035, 0.00448717948, 0.0056],
+      "unit": "m/s",
+      "scaling_factor": 1.0
+    },
+    "v_in_O2": {
+      "values": [0.00224358974, 0.0035, 0.00448717948, 0.0056],
+      "unit": "m/s",
+      "scaling_factor": 1.0
+    },
+    "p_gas": {
+      "values": [1, 10, 100],
+      "unit": "atm",
+      "convert_to": "Pa",
+      "scaling_factor": 101325
+    },
+    "i0_ref_O2": {
+      "unit": "A/m^2"
+    },
+    "i0_ref_H2": {
+      "unit": "A/m^2"
     }
   }
-  
+}

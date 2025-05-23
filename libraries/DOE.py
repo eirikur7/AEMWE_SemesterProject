@@ -3,183 +3,257 @@ import json
 import numpy as np
 import pandas as pd
 from itertools import product
-from pyDOE2 import lhs
-from sklearn.preprocessing import MinMaxScaler
+from pyDOE2 import lhs, fracfact
+from scipy.spatial.distance import cdist
+from scipy.stats import qmc
+
 
 class DOEGenerator:
-    def __init__(self, parameters_filename: str, parameters_path: str = "data_DOE_input_parameters", export_path: str = "data_DOE_output_results"):
+    def __init__(
+        self,
+        parameters_filename: str,
+        parameters_path: str = "data_DOE_input_parameters",
+        export_path: str = "data_DOE_output_results",
+        KOH_concentration: float = None,
+    ):
         """
-        Initializes the DOE generator.
+        Initialize the DOEGenerator with a parameter definition JSON file.
+
+        Args:
+            parameters_filename (str): Filename of the parameter JSON.
+            parameters_path (str): Path to the input parameter files.
+            export_path (str): Path to save generated DOE samples.
+            KOH_concentration (float, optional): Used for computing linked values.
         """
         self.parameter_file = parameters_filename
         self.export_path = export_path
         self.prefix = os.path.splitext(parameters_filename)[0]
-        self.param_defs = self._load_parameters(os.path.join(parameters_path, parameters_filename))
-        self.param_names = list(self.param_defs.keys())
+        self.KOH_conc = KOH_concentration
+        self.param_defs = self._load_parameters(
+            os.path.join(parameters_path, parameters_filename)
+        )
         self.param_values = self._get_scaled_values()
+        self.param_names = list(self.param_values.keys())  # Only include parameters with actual values
 
-    def _load_parameters(self, filepath):
+    def _load_parameters(self, filepath: str) -> dict:
+        """Load parameter definitions from a JSON file."""
         with open(filepath, 'r') as f:
             data = json.load(f)
-        return data["parameters"]
+        return data.get("parameters", {})
 
-    def _get_scaled_values(self):
+    def _get_scaled_values(self) -> dict:
         """
-        Applies scaling and returns value lists for all parameters.
+        Apply scaling and offsets to raw parameter values.
+
+        Returns:
+            dict: Scaled values per parameter.
         """
-        scaled_values = {}
+        scaled = {}
         for name, meta in self.param_defs.items():
-            vals = meta["values"]
+            vals = meta.get("values")
+            if vals is None:
+                continue  # Skip parameters without explicit values
             scale = meta.get("scaling_factor", 1.0)
             offset = meta.get("offset", 0.0)
-            scaled = [(v * scale + offset) for v in vals]
-            scaled_values[name] = scaled
-        return scaled_values
+            scaled[name] = [(v * scale + offset) for v in vals]
+        return scaled
 
-    def _add_linked_parameters(self, df: pd.DataFrame):
+    def _add_linked_parameters(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Adds linked parameters (e.g., i0_ref_H2, i0_ref_O2) based on values of T (assumed in °C).
+        Add additional parameters that are functionally dependent on existing ones.
+
+        If a known input value is matched, a predefined value is used.
+        Otherwise, a mathematical expression is used (e.g., for temperature-based exchange currents).
+
+        Args:
+            df (pd.DataFrame): The dataframe of sampled parameters.
+
+        Returns:
+            pd.DataFrame: Dataframe with linked parameters added.
         """
-        if "T" in self.param_defs and "linked" in self.param_defs["T"]:
-            T_raw = self.param_defs["T"]["values"]
-            linked = self.param_defs["T"]["linked"]
+        tol = 1e-8
+        for base, meta in self.param_defs.items():
+            linked = meta.get("linked")
+            if not linked:
+                continue
 
-            def get_linked_val(temp_val, link_vals):
-                try:
-                    # Match exact float
-                    idx = T_raw.index(round(temp_val, 2))
-                    return link_vals[idx]
-                except ValueError:
-                    raise ValueError(f"T = {temp_val} not found in original T list: {T_raw}")
+            raw_vals = meta.get("values", [])
+            use_formula = False
 
-            for linked_name, linked_vals in linked.items():
-                df[linked_name] = df["T"].map(lambda v: get_linked_val(v, linked_vals))
+            if base == "T":
+                temps = df[base].values
+                for v in temps:
+                    if not any(abs(v - rv) < tol for rv in raw_vals):
+                        use_formula = True
+                        break
+                if use_formula:
+                    if self.KOH_conc is None:
+                        raise ValueError("KOH concentration required for linked math formulas")
+                    logK = np.log(self.KOH_conc)
+
+            for link_name, link_list in linked.items():
+                def compute(v):
+                    for rv, lv in zip(raw_vals, link_list):
+                        if abs(v - rv) < tol:
+                            return lv
+                    if use_formula:
+                        if link_name == 'i0_ref_H2':
+                            return (1.18 * logK + 6.27) * np.exp(-1758 / (v + 273.15))
+                        elif link_name == 'i0_ref_O2':
+                            return (0.53 * logK + 335) * np.exp(-1458 / (v + 273.15))
+                    raise KeyError(f"No linked formula for parameter {link_name} at value {v}")
+
+                df[link_name] = df[base].map(compute)
 
         return df
 
-
-    def _save(self, df: pd.DataFrame, method_name: str):
-        filename = f"{self.prefix}_DOE_{method_name}.csv"
+    def _save(self, df: pd.DataFrame, method: str) -> pd.DataFrame:
+        """Save the DOE dataframe to CSV with units as string suffixes."""
+        filename = f"{self.prefix}_DOE_{method}.csv"
         os.makedirs(self.export_path, exist_ok=True)
-        df.to_csv(os.path.join(self.export_path, filename), index=False)
+        out = df.copy()
+        for col in out.columns:
+            meta = self.param_defs.get(col, {})
+            unit = meta.get("convert_to") or meta.get("unit")
+            if unit:
+                out[col] = out[col].map(lambda x: f"{x:.6g}[{unit}]")
+        out.to_csv(os.path.join(self.export_path, filename), index=False)
         print(f"Saved: {filename}")
-        return df
-    
-    def _export_to_comsol_txt(self, df: pd.DataFrame, method_name: str):
-        """
-        Exports DOE to a .txt file in COMSOL format.
-        Each parameter is a row: param "val1, val2, ..." [unit]
-        """
-        output_lines = []
-        for param in df.columns:
-            values = df[param].round(6).tolist()
-            values_str = ", ".join(f"{v:.6g}" for v in values)
+        return out
 
-            # Quote formatting
-            if param.startswith("i0_ref_"):
-                line = f'{param} {values_str} [A/m^2]'
-            else:
-                meta = self.param_defs.get(param, {})
-                unit = meta.get("convert_to") or meta.get("unit", "")
-                line = f'{param} "{values_str}" [{unit}]'
-
-            output_lines.append(line)
-
-        filename = f"{self.prefix}_DOE_{method_name}.txt"
-        full_path = os.path.join(self.export_path, filename)
+    def _export_to_comsol_txt(self, df: pd.DataFrame, method: str):
+        """Export DOE data in COMSOL-readable plain text format."""
+        lines = []
+        for p in df.columns:
+            vals = df[p].round(6).tolist()
+            vals_str = ", ".join(f"{v:.6g}" for v in vals)
+            meta = self.param_defs.get(p, {})
+            unit = meta.get("convert_to") or meta.get("unit", "")
+            lines.append(f'{p} "{vals_str}" [{unit}]')
+        fn = f"{self.prefix}_DOE_{method}.txt"
         os.makedirs(self.export_path, exist_ok=True)
-        with open(full_path, "w") as f:
-            f.write("\n".join(output_lines))
+        with open(os.path.join(self.export_path, fn), 'w') as f:
+            f.write("\n".join(lines))
+        print(f"Exported COMSOL-formatted file: {fn}")
 
-        print(f"Exported COMSOL-formatted file: {filename}")
-
-
-    def full_factorial(self):
-        grids = [self.param_values[name] for name in self.param_names]
-        design = list(product(*grids))
-        df = pd.DataFrame(design, columns=self.param_names)
-        df = self._add_linked_parameters(df)
-        
-        
-        self._save(df, "full_factorial")
-        
-        self._export_to_comsol_txt(df, "full_factorial")
-        self._save(df, "full_factorial")
-
-    def latin_hypercube(self, samples: int = 20, KOH_concentration: float = 1000.0):
+    def latin_hypercube(self, samples: int = 20, KOH_concentration: float = None):
         """
-        Generates a Latin Hypercube design. Samples values between the min and max of each parameter.
-        Calculates J0_an and J0_cath using provided [KOH] concentration (mol/m^3).
+        Generate a Latin Hypercube Sample (LHS) of the parameter space.
+
+        Ensures stratified sampling along each parameter dimension,
+        preventing clustering and capturing the full range of input values.
         """
-        import numpy as np
-        from pyDOE2 import lhs
-
-        num_params = len(self.param_names)
-        lhs_samples = lhs(num_params, samples=samples)
-
-        # Get bounds (min and max) from values
-        bounds = [self.param_values[name] for name in self.param_names]
+        if KOH_concentration is not None:
+            self.KOH_conc = KOH_concentration
+        n = len(self.param_names)
+        mat = lhs(n, samples=samples)
+        bounds = [self.param_values[nm] for nm in self.param_names]
         mins = np.array([min(v) for v in bounds])
         maxs = np.array([max(v) for v in bounds])
-
-        # Scale LHS into real-world ranges
-        scaled = lhs_samples * (maxs - mins) + mins
+        scaled = mat * (maxs - mins) + mins
         df = pd.DataFrame(scaled, columns=self.param_names)
+        df = self._add_linked_parameters(df)
+        self._save(df, 'latin_hypercube')
+        self._export_to_comsol_txt(df, 'latin_hypercube')
 
-        # Calculate exchange current densities if T is present
-        if "T" in df.columns:
-            T_vals = df["T"].values  # assumed to be in °C
-            T_K = T_vals + 273.15    # convert to Kelvin
+    def maximin_latin_hypercube(self, samples: int = 20, iterations: int = 50, KOH_concentration: float = None):
+        """
+        Generate a Maximin-enhanced Latin Hypercube Sample.
 
-            logKOH = np.log(KOH_concentration)
-            df["i0_ref_H2"] = (1.18 * logKOH + 6.27) * np.exp(-1758 / T_K)
-            df["i0_ref_O2"] = (0.53 * logKOH + 335) * np.exp(-1458 / T_K)
-
-        self._save(df, "latin_hypercube")
-        
-        self._export_to_comsol_txt(df, "latin_hypercube")
-        self._save(df, "latin_hypercube")
-
-
-    def random_sampling(self, samples: int = 20):
-        rng = np.random.default_rng()
-        bounds = [self.param_values[name] for name in self.param_names]
+        Iteratively generates LHS designs and selects the one that
+        maximizes the minimum distance between points — improving
+        space-filling properties.
+        """
+        if KOH_concentration is not None:
+            self.KOH_conc = KOH_concentration
+        n = len(self.param_names)
+        best_dist = -np.inf
+        best_sample = None
+        bounds = [self.param_values[nm] for nm in self.param_names]
         mins = np.array([min(v) for v in bounds])
         maxs = np.array([max(v) for v in bounds])
-        randoms = rng.uniform(mins, maxs, size=(samples, len(self.param_names)))
-        df = pd.DataFrame(randoms, columns=self.param_names)
+
+        for _ in range(iterations):
+            sample = lhs(n, samples=samples)
+            scaled = sample * (maxs - mins) + mins
+            dists = cdist(scaled, scaled)
+            np.fill_diagonal(dists, np.inf)
+            min_dist = dists.min()
+            if min_dist > best_dist:
+                best_dist = min_dist
+                best_sample = scaled
+
+        df = pd.DataFrame(best_sample, columns=self.param_names)
         df = self._add_linked_parameters(df)
-        return self._save(df, "random_sampling")
+        self._save(df, 'maximin_lhs')
+        self._export_to_comsol_txt(df, 'maximin_lhs')
 
-    def grid_sampling(self, levels_per_param: int = 3):
-        grids = [
-            np.linspace(min(v), max(v), levels_per_param)
-            for v in self.param_values.values()
-        ]
-        design = list(product(*grids))
-        df = pd.DataFrame(design, columns=self.param_names)
+    def sobol_sampling(self, samples: int = 20, KOH_concentration: float = None):
+        """
+        Generate samples using a Sobol sequence.
+
+        Sobol is a quasi-random low-discrepancy sequence that offers
+        better uniformity and reproducibility than random or LHS.
+        Ideal for surrogate modeling with limited sample budgets.
+        """
+        if KOH_concentration is not None:
+            self.KOH_conc = KOH_concentration
+        n = len(self.param_names)
+        sampler = qmc.Sobol(d=n, scramble=True)
+        raw = sampler.random(n=samples)
+        bounds = [self.param_values[nm] for nm in self.param_names]
+        mins = np.array([min(v) for v in bounds])
+        maxs = np.array([max(v) for v in bounds])
+        scaled = raw * (maxs - mins) + mins
+        df = pd.DataFrame(scaled, columns=self.param_names)
         df = self._add_linked_parameters(df)
-        return self._save(df, "grid_sampling")
+        self._save(df, 'sobol')
+        self._export_to_comsol_txt(df, 'sobol')
 
-    def fractional_factorial(self, base_design: str = "a b c ab ac bc abc"):
-        # Use only the first N parameters corresponding to letters used
-        from pyDOE2 import fracfact
 
-        clean_design = base_design.replace(" ", "")
-        if len(clean_design) > 7:
+    def full_factorial(self, KOH_concentration: float = None):
+        if KOH_concentration is not None:
+            self.KOH_conc = KOH_concentration
+        grids = [self.param_values[n] for n in self.param_names]
+        df = pd.DataFrame(list(product(*grids)), columns=self.param_names)
+        df = self._add_linked_parameters(df)
+        self._save(df, 'full_factorial')
+        self._export_to_comsol_txt(df, 'full_factorial')
+
+    def random_sampling(self, samples: int = 20, KOH_concentration: float = None):
+        if KOH_concentration is not None:
+            self.KOH_conc = KOH_concentration
+        rng = np.random.default_rng()
+        bounds = [self.param_values[nm] for nm in self.param_names]
+        mins = np.array([min(v) for v in bounds])
+        maxs = np.array([max(v) for v in bounds])
+        df = pd.DataFrame(rng.uniform(mins, maxs, (samples, len(self.param_names))),
+                          columns=self.param_names)
+        df = self._add_linked_parameters(df)
+        return self._save(df, 'random_sampling')
+
+    def grid_sampling(self, levels_per_param: int = 3, KOH_concentration: float = None):
+        if KOH_concentration is not None:
+            self.KOH_conc = KOH_concentration
+        grids = [np.linspace(min(v), max(v), levels_per_param) for v in self.param_values.values()]
+        df = pd.DataFrame(list(product(*grids)), columns=self.param_names)
+        df = self._add_linked_parameters(df)
+        return self._save(df, 'grid_sampling')
+
+    def fractional_factorial(self, base_design: str = "a b c ab ac bc abc", KOH_concentration: float = None):
+        if KOH_concentration is not None:
+            self.KOH_conc = KOH_concentration
+        design = base_design.replace(' ', '')
+        if len(design) > 7:
             raise ValueError("Maximum 7 base factors supported.")
-
-        subset_names = self.param_names[:len(clean_design)]
-        bounds = [self.param_values[name] for name in subset_names]
+        subs = self.param_names[:len(design)]
+        bounds = [self.param_values[nm] for nm in subs]
         data = fracfact(base_design)
         if data.shape[1] != len(bounds):
             raise ValueError("Mismatch between design and number of parameters.")
-
         scaled = np.zeros_like(data)
         for i, (low, high) in enumerate((min(v), max(v)) for v in bounds):
             scaled[:, i] = ((data[:, i] + 1) / 2) * (high - low) + low
-
-        df = pd.DataFrame(scaled, columns=subset_names)
-        df_full = pd.concat([df], axis=1)
-        df_full = self._add_linked_parameters(df_full)
-        return self._save(df_full, "fractional_factorial")
+        df = pd.DataFrame(scaled, columns=subs)
+        df = self._add_linked_parameters(df)
+        return self._save(df, 'fractional_factorial')
