@@ -1,2 +1,27 @@
+# Byte-compiled / cache files
 __pycache__/
+**/__pycache__/
+
+# User-specific files
+*.swp
+*.swo
+
+# Simulation archives and raw dumps
 archive/
+other/
+
+# Ignore contents but keep directory structure
+data_from_comsol/*
+!data_from_comsol/.gitkeep
+
+figures/*
+!figures/.gitkeep
+
+# Python compiled files
+*.pyc
+*.pyo
+*.pyd
+
+# Model checkpoints and training logs (optional additions)
+*.keras
+*.pkl
