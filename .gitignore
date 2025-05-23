@@ -17,6 +17,9 @@ data_from_comsol/*
 figures/*
 !figures/.gitkeep
 
+data_trained_models/*
+!data_trained_models/.gitkeep
+
 # Python compiled files
 *.pyc
 *.pyo
