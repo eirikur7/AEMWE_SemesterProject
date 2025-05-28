@@ -11,14 +11,14 @@ archive/
 other/
 
 # Ignore contents but keep directory structure
-data_from_comsol/*
-!data_from_comsol/.gitkeep
+data/COMSOL/*
+data/COMSOL_other/*
+data/DNN_trained_models/*
+data/output_results/*
+!data/.gitkeep
 
 figures/*
 !figures/.gitkeep
-
-data_trained_models/*
-!data_trained_models/.gitkeep
 
 # Python compiled files
 *.pyc
