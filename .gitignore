@@ -15,7 +15,13 @@ data/COMSOL/*
 data/COMSOL_other/*
 data/DNN_trained_models/*
 data/output_results/*
+
 !data/.gitkeep
+!data/COMSOL/.gitkeep
+!data/COMSOL_other/.gitkeep
+!data/DNN_trained_models/.gitkeep
+!data/DOE_input_parameters/.gitkeep
+!data/DOE_output_results/.gitkeep
 
 figures/*
 !figures/.gitkeep
