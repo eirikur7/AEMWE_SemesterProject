@@ -5,7 +5,7 @@ from modules.DNN import SurrogateModelBuilder
 
 # --- Configuration ---
 DATA_FOLDER = os.path.join("data", "COMSOL")
-DATA_FILE = "results_3D_GE_Applied_Current_1MKOH_63_02_1MKOH_input_parameters_DOE_maximin_lhs_processed_003.csv"
+DATA_FILE = "results_3D_GE_Applied_Current_1MKOH_63_03_1MKOH_input_parameters_DOE_maximin_lhs_success_001.csv"
 DATA_PATH = os.path.join(DATA_FOLDER, DATA_FILE)
 
 MODELS_FOLDER = os.path.join("data", "DNN_trained_models")
@@ -16,14 +16,14 @@ USE_EARLY_STOPPING = True
 
 # --- Hyperparameter Search Space ---
 HYPERPARAMETER_SEARCH_SPACE = {
-    "n_layers": (1, 20),  # deeper nets may help capture time dynamics
-    "n_units": (8, 2040, 16),  # allow wide layers for expressive capacity
+    "n_layers": (1, 8),  # deeper nets may help capture time dynamics
+    "n_units": (8, 516, 4),  # allow wide layers for expressive capacity
     "dropout_rate": (0.0, 0.4),  # allow for no dropout, up to moderate
     "use_batch_norm": [True, False],
     "learning_rate": (1e-5, 5e-2),  # full log-scale range
     "optimizer": ["adam", "nadam", "adamw", "rmsprop"],  # use strings, map later
     "batch_size": [4, 8, 16, 32, 64, 128, 256, 512],  # allow smaller batches due to small dataset
-    "epochs": [5, 10, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 220, 240, 260, 280, 300, 350, 400, 500],  # allow more training if needed
+    "epochs": [5, 10, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 250],  # allow more training if needed
     "activation": ["relu", "tanh", "swish", "gelu"],  # gelu added for smooth regression
     "loss_function": ["mse", "mae", "huber"],  # all relevant for regression
 }

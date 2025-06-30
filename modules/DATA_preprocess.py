@@ -39,11 +39,32 @@ def preprocess_csv_units(input_path, output_path):
         f.writelines(output_lines)
 
     print(f"Preprocessed data saved to {output_path}")
+    
+import pandas as pd
+
+def remove_nan_rows(input_path, output_path):
+    """
+    Removes rows with any empty cells or NaN values from a CSV file.
+    """
+    df = pd.read_csv(input_path)
+
+    # Drop rows with any NaNs or empty strings
+    df.replace('', pd.NA, inplace=True)
+    df_cleaned = df.dropna()
+
+    df_cleaned.to_csv(output_path, index=False)
+    print(f"Removed {len(df) - len(df_cleaned)} rows with missing values.")
+    print(f"Cleaned data saved to {output_path}")
+
+
 
 if __name__ == "__main__":
-    # input_file = os.path.join("data", "COMSOL", "results_3D_GE_Applied_Current_1MKOH_63_02_1MKOH_input_parameters_DOE_maximin_lhs_003.csv")
-    # output_file = os.path.join("data", "COMSOL", "results_3D_GE_Applied_Current_1MKOH_63_02_1MKOH_input_parameters_DOE_maximin_lhs_processed_003.csv")
-    # preprocess_csv_units(input_file, output_file)
+    input_file = os.path.join("data", "COMSOL", "results_3D_GE_Applied_Current_1MKOH_63_02_1MKOH_input_parameters_DOE_maximin_lhs_003.csv")
+    output_file = os.path.join("data", "COMSOL", "results_3D_GE_Applied_Current_1MKOH_63_02_1MKOH_input_parameters_DOE_maximin_lhs_processed_003.csv")
+    preprocess_csv_units(input_file, output_file)
+    remove_nan_rows(output_file, output_file)
+
+
 
     # import pandas as pd
 
